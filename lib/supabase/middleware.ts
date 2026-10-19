@@ -4,9 +4,15 @@ import { NextResponse, type NextRequest } from "next/server";
 type CookieToSet = { name: string; value: string; options: CookieOptions };
 
 const PUBLIC_PATHS = ["/login"];
+// Rutas que se protegen solas (el cron comprueba CRON_SECRET) y no deben redirigir a /login.
+const OPEN_PATHS = ["/api/cron"];
 
 /** Refresca la sesión y redirige a /login si no hay usuario. */
 export async function updateSession(request: NextRequest) {
+  if (OPEN_PATHS.some((p) => request.nextUrl.pathname.startsWith(p))) {
+    return NextResponse.next({ request });
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(

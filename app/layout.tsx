@@ -6,8 +6,8 @@ const display = Space_Grotesk({ subsets: ["latin"], variable: "--font-display" }
 const body = Inter({ subsets: ["latin"], variable: "--font-body" });
 
 export const metadata: Metadata = {
-  title: { default: "Dos Studio Sales", template: "%s · Dos Studio Sales" },
-  description: "Panel comercial interno de Dos Studio",
+  title: { default: "Dos Studio OS", template: "%s · Dos Studio OS" },
+  description: "Sistema interno de Dos Studio: comercial, clientes, tareas, documentos y facturación",
   robots: { index: false, follow: false },
   icons: { icon: "/brand/isotype.png" },
 };

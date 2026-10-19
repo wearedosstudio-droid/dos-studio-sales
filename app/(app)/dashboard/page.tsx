@@ -1,194 +1,185 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
-import { CLOSED_STATUSES, PIPELINE_STATUSES, statusLabel, type Status } from "@/lib/constants";
-import { addDaysISO, followUpLabel, formatMoney, todayISO } from "@/lib/format";
-import { PriorityBadge, StatusBadge } from "@/components/Badges";
+import { session } from "@/lib/session";
+import { getTeam } from "@/lib/team";
+import type { ActivityRow, Invoice, Notification, Task } from "@/lib/types";
+import { CLOSED_STATUSES, type Status } from "@/lib/constants";
+import { ACTIVE_PHASES } from "@/lib/os";
+import { addDaysISO, daysBetween, followUpLabel, formatMoney, formatMoneyExact, timeAgo, todayISO } from "@/lib/format";
+import { StatusBadge } from "@/components/Badges";
+import { TaskItem } from "@/components/TaskItem";
+import { ActivityFeed } from "@/components/ActivityFeed";
+import { Empty } from "@/components/OS";
 
-export const metadata: Metadata = { title: "Dashboard" };
+export const metadata: Metadata = { title: "Inicio" };
 
-type Row = {
-  id: string;
-  name: string;
-  status: Status;
-  priority: string;
-  potential_value: number | null;
-  next_follow_up_at: string | null;
-  follow_up_note: string | null;
-};
-
-function Metric({ label, value, href, accent }: { label: string; value: number; href: string; accent?: boolean }) {
+function Metric({ label, value, href, tone }: { label: string; value: string | number; href: string; tone?: "red" | "violet" }) {
   return (
-    <Link
-      href={href}
-      className={`card block p-4 transition hover:border-violet/40 ${accent ? "border-violet/30 bg-violet-soft/40" : ""}`}
-    >
+    <Link href={href} className={`card block p-4 transition hover:border-violet/40 ${tone === "violet" ? "border-violet/30 bg-violet-soft/40" : ""}`}>
       <p className="text-xs font-medium text-graphite">{label}</p>
-      <p className={`mt-2 font-display text-3xl font-semibold tabular-nums ${accent ? "text-violet" : ""}`}>{value}</p>
+      <p className={`mt-2 font-display text-3xl font-semibold tabular-nums ${tone === "red" ? "text-red-600" : tone === "violet" ? "text-violet" : ""}`}>{value}</p>
     </Link>
   );
 }
 
+type FollowUp = { id: string; name: string; status: Status; next_follow_up_at: string; follow_up_note: string | null };
+
 export default async function DashboardPage() {
-  const supabase = createClient();
-  const { data, error } = await supabase
-    .from("companies")
-    .select("id, name, status, priority, potential_value, next_follow_up_at, follow_up_note");
-
-  const companies = (data ?? []) as Row[];
+  const { supabase, me } = await session();
   const today = todayISO();
-  const inAWeek = addDaysISO(today, 7);
+  const soon = addDaysISO(today, 3);
 
-  const count = (s: Status) => companies.filter((c) => c.status === s).length;
-  const byStatus = Object.fromEntries(PIPELINE_STATUSES.map((s) => [s, count(s)])) as Record<Status, number>;
-  const maxStage = Math.max(1, ...PIPELINE_STATUSES.map((s) => byStatus[s]));
+  const [{ data: tData }, { data: clients }, { data: iData }, { data: fData }, { data: nData }, { data: aData }, team] = await Promise.all([
+    supabase.from("tasks").select("*").eq("status", "pendiente").lte("due_date", soon).order("due_date").order("sort"),
+    supabase.from("clients").select("id, name, phase, monthly_fee"),
+    supabase.from("invoices").select("*").in("status", ["emitida", "borrador"]),
+    supabase
+      .from("companies")
+      .select("id, name, status, next_follow_up_at, follow_up_note")
+      .not("next_follow_up_at", "is", null)
+      .lte("next_follow_up_at", addDaysISO(today, 7))
+      .order("next_follow_up_at"),
+    supabase.from("notifications").select("*").eq("user_id", me).is("read_at", null).order("created_at", { ascending: false }).limit(5),
+    supabase.from("activity_log").select("*").order("at", { ascending: false }).limit(8),
+    getTeam(supabase),
+  ]);
 
-  // Valor abierto: empresas en reunión, propuesta o negociación con valor indicado.
-  const openValue = companies
-    .filter((c) => ["reunion", "propuesta", "negociacion"].includes(c.status))
-    .reduce((sum, c) => sum + (c.potential_value ?? 0), 0);
+  const names = Object.fromEntries((clients ?? []).map((c) => [c.id, c.name as string]));
+  const closed = new Set((clients ?? []).filter((c) => c.phase === "cerrado").map((c) => c.id));
+  const allTasks = ((tData ?? []) as Task[]).filter((t) => !t.client_id || !closed.has(t.client_id));
+  const mine = allTasks.filter((t) => t.assignee_id === me || !t.assignee_id);
+  const myLate = mine.filter((t) => t.due_date < today);
+  const myToday = mine.filter((t) => t.due_date === today);
+  const mrr = (clients ?? []).filter((c) => (ACTIVE_PHASES as string[]).includes(c.phase)).reduce((s, c) => s + Number(c.monthly_fee ?? 0), 0);
 
-  const followUps = companies
-    .filter(
-      (c) =>
-        c.next_follow_up_at &&
-        c.next_follow_up_at <= inAWeek &&
-        !CLOSED_STATUSES.includes(c.status) &&
-        c.status !== "pausado",
-    )
-    .sort((a, b) => (a.next_follow_up_at! < b.next_follow_up_at! ? -1 : 1));
+  const invoices = (iData ?? []) as Invoice[];
+  const pending = invoices.filter((i) => i.status === "emitida");
+  const overdueInv = pending.filter((i) => i.due_date < today).sort((a, b) => (a.due_date < b.due_date ? -1 : 1));
+  const drafts = invoices.filter((i) => i.status === "borrador").length;
+  const debt = pending.reduce((s, i) => s + Number(i.total), 0);
 
-  const overdue = followUps.filter((c) => c.next_follow_up_at! < today).length;
-  const dueToday = followUps.filter((c) => c.next_follow_up_at === today).length;
+  const followUps = ((fData ?? []) as FollowUp[]).filter((c) => !CLOSED_STATUSES.includes(c.status) && c.status !== "pausado");
+  const notifications = (nData ?? []) as Notification[];
 
-  // Leads activos sin próximo seguimiento: riesgo de que se pierdan.
-  const withoutFollowUp = companies.filter(
-    (c) => !c.next_follow_up_at && !CLOSED_STATUSES.includes(c.status) && c.status !== "pausado",
-  ).length;
-
-  const greeting = new Intl.DateTimeFormat("es-ES", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    timeZone: "Europe/Madrid",
-  }).format(new Date());
+  const greeting = new Intl.DateTimeFormat("es-ES", { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Madrid" }).format(new Date());
+  const urgent = myLate.length + myToday.length;
 
   return (
     <div className="space-y-8">
       <header>
         <p className="text-sm capitalize text-graphite">{greeting}</p>
         <h1 className="mt-1 text-2xl font-semibold sm:text-3xl">
-          {overdue + dueToday > 0
-            ? `${overdue + dueToday} ${overdue + dueToday === 1 ? "seguimiento" : "seguimientos"} para hoy`
-            : "Todo al día"}
+          {urgent > 0 ? `${urgent} ${urgent === 1 ? "tarea" : "tareas"} para hoy` : "Todo al día"}
         </h1>
       </header>
 
-      {error && (
-        <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-          No se pudieron cargar los datos. Revisa la conexión con Supabase.
-        </p>
-      )}
-
-      {/* Métricas */}
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
-        <Metric label="Total leads" value={companies.length} href="/companies" />
-        <Metric label="Nuevos" value={byStatus.nuevo} href="/companies?status=nuevo" />
-        <Metric label="Contactados" value={byStatus.contactado} href="/companies?status=contactado" />
-        <Metric label="Reuniones" value={byStatus.reunion} href="/companies?status=reunion" />
-        <Metric label="Propuestas" value={byStatus.propuesta} href="/companies?status=propuesta" />
-        <Metric label="Ganados" value={byStatus.ganado} href="/companies?status=ganado" accent />
-        <Metric label="Perdidos" value={count("perdido")} href="/companies?status=perdido" />
+      <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Metric label="Mis tareas vencidas" value={myLate.length} href="/tasks" tone={myLate.length ? "red" : undefined} />
+        <Metric label="Seguimientos comerciales" value={followUps.filter((f) => f.next_follow_up_at <= today).length} href="/companies?sort=follow_up" />
+        <Metric label="Pendiente de cobro" value={formatMoney(debt)} href="/invoices?status=pendientes" tone={overdueInv.length ? "red" : undefined} />
+        <Metric label="Ingresos recurrentes" value={formatMoney(mrr)} href="/reports" tone="violet" />
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-        {/* Seguimientos */}
-        <section className="card p-5 sm:p-6">
-          <div className="mb-4 flex items-baseline justify-between gap-3">
-            <h2 className="section-title">Seguimientos · próximos 7 días</h2>
-            {overdue > 0 && <span className="text-xs font-medium text-red-600">{overdue} vencidos</span>}
-          </div>
+      <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
+        <div className="space-y-6">
+          <section className="card p-5 sm:p-6">
+            <div className="mb-2 flex items-baseline justify-between">
+              <h2 className="section-title">Mis tareas · hasta dentro de 3 días</h2>
+              <Link href="/tasks" className="text-xs font-medium text-violet hover:underline">Ver todas</Link>
+            </div>
+            {mine.length === 0 ? (
+              <Empty title="Nada pendiente para estos días." />
+            ) : (
+              <ul className="divide-y divide-line">
+                {mine.slice(0, 12).map((t) => (
+                  <TaskItem key={t.id} task={t} team={team} me={me} clientName={t.client_id ? names[t.client_id] : null} />
+                ))}
+              </ul>
+            )}
+          </section>
 
-          {followUps.length === 0 ? (
-            <p className="py-6 text-sm text-graphite">No hay seguimientos para esta semana.</p>
-          ) : (
-            <ul className="divide-y divide-line">
-              {followUps.map((c) => {
-                const late = c.next_follow_up_at! < today;
-                const isToday = c.next_follow_up_at === today;
-                return (
-                  <li key={c.id}>
-                    <Link
-                      href={`/companies/${c.id}`}
-                      className="-mx-2 flex items-start gap-4 rounded-lg px-2 py-3 transition hover:bg-canvas"
-                    >
-                      <span
-                        className={`mt-0.5 w-28 shrink-0 text-xs font-semibold ${
-                          late ? "text-red-600" : isToday ? "text-violet" : "text-graphite"
-                        }`}
-                      >
-                        {followUpLabel(c.next_follow_up_at!, today)}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium">{c.name}</span>
-                          <StatusBadge status={c.status} />
+          <section className="card p-5 sm:p-6">
+            <div className="mb-3 flex items-baseline justify-between">
+              <h2 className="section-title">Seguimientos comerciales · 7 días</h2>
+              <Link href="/companies" className="text-xs font-medium text-violet hover:underline">Comercial</Link>
+            </div>
+            {followUps.length === 0 ? (
+              <Empty title="No hay seguimientos esta semana." />
+            ) : (
+              <ul className="divide-y divide-line">
+                {followUps.slice(0, 8).map((c) => {
+                  const late = c.next_follow_up_at < today;
+                  return (
+                    <li key={c.id}>
+                      <Link href={`/companies/${c.id}`} className="-mx-2 flex items-start gap-4 rounded-lg px-2 py-3 hover:bg-canvas">
+                        <span className={`mt-0.5 w-28 shrink-0 text-xs font-semibold ${late ? "text-red-600" : c.next_follow_up_at === today ? "text-violet" : "text-graphite"}`}>
+                          {followUpLabel(c.next_follow_up_at, today)}
                         </span>
-                        {c.follow_up_note && (
-                          <span className="mt-0.5 block truncate text-sm text-graphite">{c.follow_up_note}</span>
-                        )}
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-2"><span className="font-medium">{c.name}</span><StatusBadge status={c.status} /></span>
+                          {c.follow_up_note && <span className="mt-0.5 block truncate text-sm text-graphite">{c.follow_up_note}</span>}
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        </div>
+
+        <aside className="space-y-6">
+          <section className={`card p-5 ${overdueInv.length ? "border-red-200" : ""}`}>
+            <div className="mb-3 flex items-baseline justify-between">
+              <h2 className="section-title">Cobros vencidos</h2>
+              {drafts > 0 && <Link href="/invoices?status=borrador" className="text-xs font-medium text-violet hover:underline">{drafts} borradores</Link>}
+            </div>
+            {overdueInv.length === 0 ? (
+              <p className="text-sm text-graphite">Nada vencido.</p>
+            ) : (
+              <ul className="divide-y divide-line text-sm">
+                {overdueInv.slice(0, 6).map((i) => (
+                  <li key={i.id}>
+                    <Link href={`/invoices/${i.id}`} className="flex items-center justify-between gap-3 py-2 hover:text-violet">
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">{i.client_name ?? names[i.client_id]}</span>
+                        <span className="text-xs text-red-600">{i.number} · hace {daysBetween(i.due_date, today)} días</span>
                       </span>
-                      <span className="hidden sm:block">
-                        <PriorityBadge priority={c.priority} />
-                      </span>
+                      <span className="tabular-nums">{formatMoneyExact(i.total)}</span>
                     </Link>
                   </li>
-                );
-              })}
-            </ul>
-          )}
-
-          {withoutFollowUp > 0 && (
-            <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              {withoutFollowUp} {withoutFollowUp === 1 ? "lead activo no tiene" : "leads activos no tienen"} próximo
-              seguimiento.{" "}
-              <Link href="/companies?sort=follow_up" className="font-medium underline">
-                Revisar
-              </Link>
-            </p>
-          )}
-        </section>
-
-        {/* Pipeline */}
-        <section className="card p-5 sm:p-6">
-          <div className="mb-4 flex items-baseline justify-between">
-            <h2 className="section-title">Pipeline</h2>
-            {openValue > 0 && (
-              <span className="text-xs text-graphite" title="Reunión + propuesta + negociación">
-                {formatMoney(openValue)} en juego
-              </span>
+                ))}
+              </ul>
             )}
-          </div>
-          <ul className="space-y-2.5">
-            {PIPELINE_STATUSES.map((s) => (
-              <li key={s}>
-                <Link href={`/companies?status=${s}`} className="group grid grid-cols-[96px_1fr_28px] items-center gap-3">
-                  <span className="text-sm text-graphite group-hover:text-ink">{statusLabel(s)}</span>
-                  <span className="h-2 overflow-hidden rounded-full bg-canvas">
-                    <span
-                      className={`block h-full rounded-full ${s === "ganado" ? "bg-emerald-500" : "bg-violet"}`}
-                      style={{ width: `${(byStatus[s] / maxStage) * 100}%` }}
-                    />
-                  </span>
-                  <span className="text-right text-sm font-medium tabular-nums">{byStatus[s]}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-4 border-t border-line pt-3 text-xs text-graphite">
-            Pausados: {count("pausado")} · Perdidos: {count("perdido")}
-          </p>
-        </section>
+          </section>
+
+          <section className="card p-5">
+            <div className="mb-3 flex items-baseline justify-between">
+              <h2 className="section-title">Avisos sin leer</h2>
+              <Link href="/notifications" className="text-xs font-medium text-violet hover:underline">Ver todos</Link>
+            </div>
+            {notifications.length === 0 ? (
+              <p className="text-sm text-graphite">No tienes avisos nuevos.</p>
+            ) : (
+              <ul className="space-y-3 text-sm">
+                {notifications.map((n) => (
+                  <li key={n.id}>
+                    {n.link ? <Link href={n.link} className="font-medium hover:text-violet">{n.title}</Link> : <p className="font-medium">{n.title}</p>}
+                    <p className="text-xs text-graphite">{timeAgo(n.created_at)}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="card p-5">
+            <div className="mb-1 flex items-baseline justify-between">
+              <h2 className="section-title">Actividad reciente</h2>
+              <Link href="/activity" className="text-xs font-medium text-violet hover:underline">Ver todo</Link>
+            </div>
+            <ActivityFeed rows={(aData ?? []) as ActivityRow[]} team={team} me={me} clients={names} />
+          </section>
+        </aside>
       </div>
     </div>
   );
