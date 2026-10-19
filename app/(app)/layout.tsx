@@ -17,20 +17,31 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // Segunda barrera además del middleware.
   if (!user) redirect("/login");
 
+  const { count: unread } = await supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", user.id)
+    .is("read_at", null);
+
   return (
     <div className="min-h-screen lg:flex">
       {/* Sidebar escritorio */}
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-line bg-paper px-4 py-6 lg:flex lg:h-screen lg:sticky lg:top-0">
+      <aside className="hidden w-60 shrink-0 flex-col overflow-y-auto border-r border-line bg-paper px-4 py-6 lg:flex lg:h-screen lg:sticky lg:top-0">
         <Link href="/dashboard" className="mb-8 flex items-center gap-2.5 px-2">
           <Image src="/brand/isotype.png" alt="" width={28} height={28} />
-          <span className="font-display text-base font-semibold">Dos Studio Sales</span>
+          <span className="font-display text-base font-semibold">Dos Studio <span className="text-violet">OS</span></span>
         </Link>
 
-        <Link href="/companies/new" className="btn-primary mb-6">
-          + Nueva empresa
-        </Link>
+        <div className="mb-6 grid grid-cols-2 gap-2">
+          <Link href="/clients/new" className="btn-primary px-2 text-xs">
+            + Cliente
+          </Link>
+          <Link href="/companies/new" className="btn-secondary px-2 text-xs">
+            + Lead
+          </Link>
+        </div>
 
-        <Nav variant="sidebar" />
+        <Nav variant="sidebar" unread={unread ?? 0} />
 
         <div className="mt-auto border-t border-line pt-4">
           <p className="truncate px-2 text-xs text-graphite" title={user.email ?? ""}>
@@ -49,7 +60,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div className="flex items-center justify-between px-4 py-3">
           <Link href="/dashboard" className="flex items-center gap-2">
             <Image src="/brand/isotype.png" alt="" width={24} height={24} />
-            <span className="font-display text-sm font-semibold">Dos Studio Sales</span>
+            <span className="font-display text-sm font-semibold">Dos Studio <span className="text-violet">OS</span></span>
           </Link>
           <div className="flex items-center gap-2">
             <Link href="/companies/new" className="btn-primary px-3 py-1.5 text-xs">
@@ -63,7 +74,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </div>
         </div>
         <div className="px-3 pb-2">
-          <Nav variant="top" />
+          <Nav variant="top" unread={unread ?? 0} />
         </div>
       </header>
 

@@ -10,6 +10,7 @@ import { StatusSelect } from "@/components/StatusSelect";
 import { SubmitButton } from "@/components/SubmitButton";
 import { ConfirmButton } from "@/components/ConfirmButton";
 import { addNote, completeFollowUp, deleteCompany, deleteNote, saveFollowUp, setStatus } from "../actions";
+import { convertCompany } from "../../clients/actions";
 
 export const metadata: Metadata = { title: "Empresa" };
 
@@ -73,6 +74,13 @@ export default async function CompanyPage({ params }: { params: { id: string } }
             <Link href={`/companies/${c.id}/edit`} className="btn-secondary">
               Editar
             </Link>
+            {["propuesta", "negociacion", "ganado"].includes(c.status) && (
+              <form action={convertCompany.bind(null, c.id)}>
+                <button type="submit" className="btn-primary">
+                  {c.status === "ganado" ? "Ver / crear cliente" : "Ganado: crear cliente"}
+                </button>
+              </form>
+            )}
           </div>
         </div>
 

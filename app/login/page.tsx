@@ -30,7 +30,7 @@ export default function LoginPage() {
         <div className="w-full max-w-sm">
           <div className="mb-8 flex items-center gap-3 lg:hidden">
             <Image src="/brand/isotype.png" alt="" width={32} height={32} />
-            <span className="font-display text-lg font-semibold">Dos Studio Sales</span>
+            <span className="font-display text-lg font-semibold">Dos Studio <span className="text-violet">OS</span></span>
           </div>
           <h1 className="text-2xl font-semibold">Acceso</h1>
           <p className="mb-8 mt-1 text-sm text-graphite">Solo para el equipo de Dos Studio.</p>
